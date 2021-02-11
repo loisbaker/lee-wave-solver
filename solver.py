@@ -1,8 +1,9 @@
 import numpy as np
 from numpy import pi
+import warnings
 import scipy.fftpack as fft
 class LeeWaveSolver:
-    def __init__(self, nx=400, nz=129, H=3000, L=20000):
+    def __init__(self, nx=400, nz=129, H=3000, L=20000, rho_0=1027):
         if nx % 2 != 0 or nz % 2 != 1:
             raise ValueError('nx should be even and nz should be odd')
         self.nx = nx
@@ -14,8 +15,21 @@ class LeeWaveSolver:
         self.dz = self.H/self.nz
         self.z = np.linspace(0, self.H, self.nz)
         self.h_topo = None
-        self.h_topo_hat = None
+        self.U = 0.1*np.ones_like(self.z)
+        self.U_type = 'Uniform'
+        self.N = 0.001*np.ones_like(self.z)
+        self.uniform_mean = True
+        self.f = 0
+        self.Ah = 0
+        self.Dh = 0
+        self.rho_0 = rho_0
+        self.hydrostatic = False
+        self.open_boundary = True
         self.set_topo()
+        self.set_mean_velocity()
+        self.set_mean_stratification()
+        self.wave_fields = None
+        self.fourier_wave_fields = None
 
     def set_topo(self, topo_type='Gaussian', h0=50, width=1000, k_topo=2*pi/5000, k_max=0.01, k_min=0.001, K0=2.3e-4,
                  L0=1.3e-4, mu=3.5, h_input=None):
@@ -27,13 +41,13 @@ class LeeWaveSolver:
                 raise ValueError('Topography width is too large compared to the length of domain')
             if h0 > self.H:
                 raise ValueError('Topography height should be less than domain height')
-            h_topo = h0*np.exp(-self.x**2/width**2)
+            self.h_topo = h0*np.exp(-self.x**2/width**2)
         elif topo_type == 'WitchOfAgnesi':
             if h0 > self.H:
                 raise ValueError('Topography height should be less than domain height')
             elif width > self.L / 5:
                 raise ValueError('Topography width is too large compared to the length of domain')
-            h_topo = h0/(1 + self.x**2/width**2)
+            self.h_topo = h0/(1 + self.x**2/width**2)
 
         elif topo_type == 'Monochromatic':
             if h0 > self.H:
@@ -46,15 +60,18 @@ class LeeWaveSolver:
                 self.L = lam*round(n)
                 self.dx = 2 * self.L / self.nx
                 self.x = np.linspace(-self.L, self.L - self.dx, self.nx)
-                print(f'Domain width L has been adjusted to {self.L:.2f}m to allow topography with wavelength {lam:.2f}m')
-            h_topo = h0*np.cos(self.x*k_topo)
+                warnings.warn(f'Domain width L has been adjusted to {self.L:.2f}m to allow topography with wavelength {lam:.2f}m')
+            self.h_topo = h0*np.cos(self.x*k_topo)
         elif topo_type == 'GJ98':
             if h0 > self.H:
                 raise ValueError('Topography height should be less than domain height')
-            h_topo = self.GJ98topo(h0, k_max, k_min, K0, L0, mu)
+            self.h_topo = self.GJ98topo(h0, k_max, k_min, K0, L0, mu)
         elif topo_type == 'Custom':
-            h_topo = h_input
-        self.h_topo = h_topo
+            if h_input is None:
+                raise ValueError('Topography needs to be given in \'h_input\'')
+            elif len(h_input) != len(self.x):
+                raise ValueError('\'h_input\' should be the same length as x')
+            self.h_topo = h_input
 
     def GJ98topo(self, h0=25, k_max=0.01, k_min=0.001, K0=2.3e-4, L0=1.3e-4, mu=3.5):
         # Define spectral vectors:
@@ -81,7 +98,287 @@ class LeeWaveSolver:
         # Rescale
         scaling = h0/np.sqrt(np.mean(h_topo**2))
         h_topo *= scaling
-
         return h_topo
+
+    def set_mean_velocity(self, U_type='Uniform',U_0=0.1,U_H=0.3,U_input=None):
+        self.U_type = U_type
+        if U_type == 'Uniform':
+            self.U = U_0*np.ones_like(self.z)
+        elif U_type == 'Linear':
+            self.uniform_mean = False
+            self.U = U_0 + (U_H-U_0)/self.H*self.z
+        elif U_type == 'Custom':
+            self.uniform_mean = False
+            if U_input is None:
+                raise ValueError('U needs to be given in \'U_input\'')
+            elif len(U_input) != len(self.z):
+                raise ValueError('\'U_input\' should be the same length as z')
+            self.U = U_input
+
+    def set_mean_stratification(self, N_type='Uniform',N_0=0.001,N_H=0.003,N_input=None):
+        if N_type == 'Uniform':
+            self.N = N_0*np.ones_like(self.z)
+        elif N_type == 'Linear':
+            self.uniform_mean = False
+            self.U = N_0 + (N_H-N_0)/self.H*self.z
+        elif N_type == 'Custom':
+            self.uniform_mean = False
+            if N_input is None:
+                raise ValueError('N needs to be given in \'N_input\'')
+            elif len(N_input) != len(self.z):
+                raise ValueError('\'N_input\' should be the same length as z')
+            self.N = N_input
+
+    def solve(self, f=0, open_boundary=True, hydrostatic=True, Ah=1, Dh=None):
+        self.f = f
+        self.open_boundary = open_boundary
+        self.hydrostatic = hydrostatic
+        self.Ah = Ah
+        self.Dh = Dh if Dh is not None else Ah
+
+        # First check the inputs are consistent, raise errors or warn if not:
+        self.check_inputs()
+
+        # Find the transformed topography and truncated and full wavenumber vectors
+        k_full, k_trunc, h_hat_trunc = self.__transform_topo()
+
+        # Define the coefficients of the ODE
+        P, Q = self.__ODEcoeffs(k_trunc)
+
+        # Solve for the Fourier transformed wave fields
+        self.fourier_wave_fields = self.__fourier_solve(k_full, k_trunc, h_hat_trunc, P, Q)
+
+        # Invert to give the real space wave fields
+        self.wave_fields = self.__inverse_transform(self.fourier_wave_fields)
+
+    def __transform_topo(self):
+        # Define full wavenumber vector
+        k_full = pi/self.L*np.arange(-self.nx/2, self.nx/2)
+
+        # Take transform
+        h_hat = fft.fftshift(fft.fft(fft.ifftshift(self.h_topo)))
+
+        # Truncate to remove wavenumbers where h_hat is negligible
+        k_trunc = k_full[np.abs(h_hat) > np.max(np.abs(h_hat))*1e-3]
+        h_hat_trunc = h_hat[np.abs(h_hat) > np.max(np.abs(h_hat))*1e-3]
+
+        return k_full, k_trunc, h_hat_trunc
+
+    def __ODEcoeffs(self, k_trunc):
+        Ah = self.Ah
+        Dh = self.Dh
+        f = self.f
+        nk = len(k_trunc)
+        nz = len(self.z)
+        if self.uniform_mean:
+            U = self.U[0]
+            N = self.N[0]
+        else:
+            N = self.N
+            U = self.U
+            Uz = np.gradient(U, self.dz)
+            Uzz = np.gradient(Uz, self.dz)
+        if self.hydrostatic:
+            alpha = 0
+        else:
+            alpha = 1
+
+        if self.f == 0:
+            if self.uniform_mean:
+                Q = np.zeros(nk)
+                P = 0
+                for i, k in enumerate(k_trunc):
+                    Q[i] = (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / (U - 1j * k * Ah) / (
+                                U - 1j * k * Dh)
+            else:
+                Q = np.zeros_like(nz,nk)
+                P = np.zeros_like(nz,nk)
+                for i, k in enumerate(k_trunc):
+                    Q[:,i] = (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / (U - 1j * k * Ah) / (
+                                U - 1j * k * Dh) - Uzz / (U - 1j * k * Ah)
+        else:
+            if self.uniform_mean:
+                Q = np.zeros(nk)
+                P = 0
+                for i, k in enumerate(k_trunc):
+                    Q[i] = k ** 2 * (U - 1j * k * Ah) / (U - 1j * k * Dh) * \
+                           (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / \
+                           (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2)
+            else:
+                Q = np.zeros_like(nz, nk)
+                P = np.zeros_like(nz, nk)
+                for i, k in enumerate(k_trunc):
+                    P[:, i] = f ** 2 * Uz * (2 * U - 1j * k * (Ah + Dh)) / \
+                              (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2) / (U - 1j * k * Ah) / (U - 1j * k * Dh)
+                    Q[:, i] = k ** 2 * (U - 1j * k * Ah) / (U - 1j * k * Dh) * \
+                           (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / \
+                           (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2) -\
+                              Uzz * k ** 2 * (U - 1j * k * Ah) / (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2)
+        return P, Q
+
+    def __fourier_solve(self, k_full, k_trunc, h_hat_trunc, P, Q):
+        nk_trunc = len(k_trunc)
+        nk_full = len(k_full)
+        nz = len(self.z)
+        H = self.H
+        z = self.z
+        Ah = self.Ah
+        Dh = self.Dh
+        f = self.f
+        rho_0 = self.rho_0
+
+        if self.uniform_mean:
+            U = self.U[0]
+            N = self.N[0]
+        else:
+            N = self.N
+            U = self.U
+            Uz = np.gradient(U, self.dz)
+            Uzz = np.gradient(Uz, self.dz)
+
+        # Initialise transformed fields
+        psi_hat = np.zeros(nk_trunc, nz)
+        u_hat = np.zeros(nk_trunc, nz)
+        v_hat = np.zeros(nk_trunc, nz)
+        w_hat = np.zeros(nk_trunc, nz)
+        b_hat = np.zeros(nk_trunc, nz)
+        p_hat = np.zeros(nk_trunc, nz)
+
+        # Unbounded solution
+        if self.open_boundary:
+            for ik, k in enumerate(k_trunc):
+                if k != 0: # Don't want the singularity at k=0, set it to zero
+                    # Define vertical wavenumber m
+                    msqr = Q[ik]
+
+                    # Choice of positive or negative square root does matter here
+                    m = np.sqrt(msqr)
+                    if np.imag(m) == 0:
+                        m = np.sign(k) * np.abs(m)
+                    else:
+                        m = np.sign(np.imag(m)) * m
+
+                    psi_hat[ik,:] = h_hat_trunc[ik] * U * np.exp(1j * m * z)
+                    w_hat[ik,:] = 1j * k * psi_hat[ik,:]
+                    u_hat[ik,:] = -1j * m * psi_hat[ik,:]
+                    v_hat[ik,:] = (-f / (1j * k * U + Ah * k ** 2)) * u_hat[ik,:]
+                    b_hat[ik,:] = (-N ** 2 / (1j * k * U + Dh * k ** 2)) * w_hat[ik,:]
+                    p_hat[ik,:] = rho_0 * ((1j * k * Ah - U) * u_hat[ik,:] - 1j * f / k * v_hat[ik,:])
+
+        # Bounded but uniform solution
+        elif (self.open_boundary is False) and self.uniform_mean:
+
+            for ik, k in enumerate(k_trunc):
+                if k != 0: # Don't want the singularity at k=0, set it to zero
+                    # Define vertical wavenumber m
+                    msqr = Q[ik]
+
+                    # Choice of positive or negative square root doesn't matter here
+                    m = np.sqrt(msqr)
+
+                    psi_hat[ik,:] = h_hat_trunc[ik] * U * np.sin(m * (H - z)) / np.sin(m * H)
+                    w_hat[ik,:] = 1j * k * psi_hat[ik,:]
+                    u_hat[ik,:] = h_hat_trunc[ik] * U * m * np.cos(m * (H - z)) / np.sin(m * H)
+                    v_hat[ik,:] = (-f / (1j * k * U + Ah * k ** 2)) * u_hat[ik,:]
+                    b_hat[ik,:] = (-N ** 2 / (1j * k * U + Dh * k ** 2)) * w_hat[ik,:]
+                    p_hat[ik,:] = rho_0 * ((1j * k * Ah - U) * u_hat[ik,:] - 1j * f / k * v_hat[ik,:])
+
+
+        # Bounded and non - uniform solution
+        elif (self.open_boundary is False) and (self.uniform_mean is False):
+            # Find forcing function to transform problem to homogeneous BVP
+            F, R = self.__forcing_poly(P, Q)
+
+            # Use Galerkin expansion to solve homogeneous problem
+            eta = self.__galerkin_sol(P, Q, R, F)
+
+            for ik, k in enumerate(k_trunc):
+                if k != 0: # Don't want the singularity at k=0, set it to zero
+                    psi_hat[ik,:] = h_hat_trunc[ik] * U[0] * eta[ik,:]
+                    w_hat[ik,:] = 1j * k * psi_hat[ik,:]
+                    u_hat[ik,:] = np.gradient(-psi_hat[ik,:], self.dz)
+                    v_hat[ik,:] = (-f / (1j * k * U + Ah * k ** 2)) * u_hat[ik,:]
+                    b_hat[ik,:] = (f * Uz * v_hat[ik,:] - N ** 2 * w_hat[ik,:]) / (1j * k * U + Dh * k ** 2)
+                    p_hat[ik,:] = rho_0 * ((1j * k * Ah - U) * u_hat[ik,:] - 1j * f / k * v_hat[ik,:] + 1j / k * (w_hat[ik,:] * Uz))
+
+        # Pad the truncated solutions ready for their Fourier transform
+        # trunc_inds = zeros(size(kv_trunc));
+        # i_trunc = 1;
+        # for ik = 1:nk_full
+        # if kv_full(ik) == kv_trunc(i_trunc)
+        #     trunc_inds(i_trunc) = ik;
+        #     i_trunc = i_trunc + 1;
+        # end
+        # if i_trunc > nk_trunc
+        #     break
+        # end
+        # end
+        # psi_hat_padded = zeros(nk_full, nz);
+        # u_hat_padded = zeros(nk_full, nz);
+        # v_hat_padded = zeros(nk_full, nz);
+        # w_hat_padded = zeros(nk_full, nz);
+        # b_hat_padded = zeros(nk_full, nz);
+        # p_hat_padded = zeros(nk_full, nz);
+        # psi_hat_padded(trunc_inds,:) = psi_hat;
+        # u_hat_padded(trunc_inds,:) = u_hat;
+        # v_hat_padded(trunc_inds,:) = v_hat;
+        # w_hat_padded(trunc_inds,:) = w_hat;
+        # b_hat_padded(trunc_inds,:) = b_hat;
+        # p_hat_padded(trunc_inds,:) = p_hat;
+
+        return wave_fields
+
+    def __forcing_poly(self,P, Q):
+        F = np.zeros_like(Q)
+        R = np.zeros_like(Q)
+        nk = Q.shape[1]
+        H = self.H
+        z = self.z
+        for i in range(nk):
+            a = P[0, i]
+            b = Q[0, i]
+            c = P[-1, i]
+            mat = np.array([[2, a - 2/H], [-4 - c * H, -2/H - c]])
+            v = np.array([a/H - b, c/H])
+            sol = np.dot(np.linalg.inv(mat), v)
+            A = sol[0]
+            B = sol[1]
+            F[:, i] = (1 - z / H) * (A * z ** 2 + B * z + 1)
+            R[:, i] = -((1 - z / H) * 2 * A - 2 / H * (2 * A * z + B) + P[:, i] *
+                        ((1 - z / H) * (2 * A * z + B) - 1 / H * (A * z ** 2 + B * z + 1)) + Q[:, i] * F[:, i])
+        return F, R
+
+    def __galerkin_sol(P, Q, R, F)
+        # TODO
+        return eta
+
+    def check_inputs(self):
+
+        # First check for critical levels
+        if any(self.U) < 0 and any(self.U) > 0:
+            warnings.warn('U changes sign somewhere in the domain. Be careful, '
+                          'the linear approximation may not be valid near critical levels!')
+
+        # Warn if U is decreasing anywhere
+        max_u = self.U[0]
+        for u_ in self.U:
+            if u_ < max_u:
+                warnings.warn('Be careful using a decreasing U profile - linear solution may not be valid, and vertical'
+                              'viscosity is not implemented')
+            if u_ > max_u:
+                max_u = u_
+
+        # Check that f or Uzz is zero
+        if self.f != 0 and self.U_type == 'Custom':
+            warnings.warn('The mean flow is only valid if f is zero or U is linear')
+
+        # Check that the flow is uniform if the rigid lid is used
+        if self.open_boundary and (self.uniform_mean is False):
+            raise ValueError('Background fields must be uniform when an open boundary is used')
+
+        # Check that there is some friction if there is a rigid lid
+        if (self.open_boundary is False) and self.Ah == 0 and self.Dh == 0:
+            raise ValueError('A rigid lid with no friction may cause resonances, linear solution may not be valid')
+
 
 
