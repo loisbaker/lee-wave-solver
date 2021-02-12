@@ -21,7 +21,6 @@ def fourier_fields(k_trunc, z, hhat_trunc, P, Q, U, N, f, Ah, Dh, rhonil, unifor
 def forcing_poly(z, P, Q):
     return F, R
 
-
 def galerkin_sol(z, P, Q, R, F):
     return eta
 

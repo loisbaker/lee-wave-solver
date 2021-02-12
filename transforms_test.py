@@ -33,15 +33,15 @@ from numpy import pi
 # k = np.arange(-5, 5)
 # L, K = np.meshgrid(l, k)
 # print(L)
-r = np.array([1, 2])
-mat = np.array([[1,2,], [3,4]])
-v = np.dot(mat, r)
-
-rr = np.dot(np.linalg.inv(mat), v)
-print(r)
-print(mat)
-print(v)
-print(rr)
+# r = np.array([1, 2])
+# mat = np.array([[1,2,], [3,4]])
+# v = np.dot(mat, r)
+#
+# rr = np.dot(np.linalg.inv(mat), v)
+# print(r)
+# print(mat)
+# print(v)
+# print(rr)
 # mat = np.array([[1,2,], [3,4]])
 # print(mat)
 # print(mat[:,1])
@@ -64,5 +64,25 @@ print(rr)
 #
 # print(sinft.shape)
 
+k_trunc = np.array([2,3,5,8])
+nk_trunc = len(k_trunc)
+k_full = np.array([1,2,3,4,5,6,7,8,9,10])
 
+trunc_inds = np.zeros_like(k_trunc)
+for ik, k in enumerate(k_trunc):
+    trunc_inds[ik] = np.where(k_full == k)[0]
+print(trunc_inds)
 
+p = np.array([4,4,3,4])
+p_pad = np.zeros_like(k_full)
+p_pad[trunc_inds] = p
+print(p_pad)
+# psi_hat_padded = zeros(nk_full, nz);
+# u_hat_padded = zeros(nk_full, nz);
+# v_hat_padded = zeros(nk_full, nz);
+# w_hat_padded = zeros(nk_full, nz);
+# b_hat_padded = zeros(nk_full, nz);
+# p_hat_padded = zeros(nk_full, nz);
+# psi_hat_padded(trunc_inds,:) = psi_hat;
+#
+#
