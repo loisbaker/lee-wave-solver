@@ -2,15 +2,16 @@ import numpy as np
 from numpy import pi
 import xarray as xr
 import warnings
-import scipy.fftpack as fft
+import scipy.fft as fft
 
 
 class LeeWaveSolver:
-    def __init__(self, nx=400, nz=129, H=3000, L=20000, rho_0=1027):
+    def __init__(self, nx=800, nz=201, nm=200, H=3000, L=20000, rho_0=1027):
         if nx % 2 != 0 or nz % 2 != 1:
             raise ValueError('nx should be even and nz should be odd')
         self.nx = nx
         self.nz = nz
+        self.nm = nm
         self.H = H
         self.L = L
         self.dx = 2 * self.L / self.nx
@@ -35,9 +36,7 @@ class LeeWaveSolver:
         self.ds = None
 
     def set_topo(self, topo_type='Gaussian', h0=50, width=1000, k_topo=2 * pi / 5000, k_max=0.01, k_min=0.001,
-                 K0=2.3e-4,
-                 L0=1.3e-4, mu=3.5, h_input=None):
-
+                 K0=2.3e-4, L0=1.3e-4, mu=3.5, h_input=None):
         if topo_type == 'Gaussian':
             if h0 > self.H:
                 raise ValueError('Topography height should be less than domain height')
@@ -125,7 +124,7 @@ class LeeWaveSolver:
             self.N = N_0 * np.ones_like(self.z)
         elif N_type == 'Linear':
             self.uniform_mean = False
-            self.U = N_0 + (N_H - N_0) / self.H * self.z
+            self.N = N_0 + (N_H - N_0) / self.H * self.z
         elif N_type == 'Custom':
             self.uniform_mean = False
             if N_input is None:
@@ -145,12 +144,12 @@ class LeeWaveSolver:
         self.check_inputs()
 
         # Find the transformed topography and truncated and full wavenumber vectors
-        k_full, k_trunc, h_hat, h_hat_trunc = self.__transform_topo()
+        k_full, k_trunc, h_topo_hat, h_topo_hat_trunc = self.__transform_topo()
         # Define the coefficients of the ODE
         P, Q = self.__ODEcoeffs(k_trunc)
 
         # Solve for the Fourier transformed wave fields
-        psi_hat, u_hat, v_hat, w_hat, b_hat, p_hat = self.__fourier_solve(k_full, k_trunc, h_hat, h_hat_trunc, P, Q)
+        psi_hat, u_hat, v_hat, w_hat, b_hat, p_hat = self.__fourier_solve(k_full, k_trunc, h_topo_hat, h_topo_hat_trunc, P, Q)
 
         # Invert to give the real space wave fields
         psi = self.__inverse_transform(psi_hat)
@@ -177,7 +176,7 @@ class LeeWaveSolver:
                 w_hat=(["k", "z"], w_hat),
                 b_hat=(["k", "z"], b_hat),
                 p_hat=(["k", "z"], p_hat),
-                h_hat=(["k"], h_hat),
+                h_topo_hat=(["k"], h_topo_hat),
             ),
             coords=dict(
                 x=(["x"], self.x),
@@ -203,7 +202,7 @@ class LeeWaveSolver:
         ds.b_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation velocity b"
         ds.p_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation pressure p"
         ds.b_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation buoyancy b"
-        ds.h_hat.attrs["long_name"] = "Horizontal Fourier transform of topography h"
+        ds.h_topo_hat.attrs["long_name"] = "Horizontal Fourier transform of topography h"
 
         self.ds = ds
 
@@ -212,7 +211,7 @@ class LeeWaveSolver:
         field = np.zeros_like(field_hat, dtype=float)
         # Loop through z values
         for iz in range(nz):
-            field[:, iz] = np.real(fft.fftshift(fft.ifft(fft.ifftshift(field_hat[:,iz]))))
+            field[:, iz] = 1/self.dx*np.real(fft.fftshift(fft.ifft(fft.ifftshift(field_hat[:,iz]))))
 
         return field
 
@@ -221,13 +220,13 @@ class LeeWaveSolver:
         k_full = pi / self.L * np.arange(-self.nx / 2, self.nx / 2)
 
         # Take transform
-        h_hat = fft.fftshift(fft.fft(fft.ifftshift(self.h_topo)))
+        h_topo_hat = self.dx * fft.fftshift(fft.fft(fft.ifftshift(self.h_topo)))
 
         # Truncate to remove wavenumbers where h_hat is negligible
-        k_trunc = k_full[np.abs(h_hat) > np.max(np.abs(h_hat)) * 1e-3]
-        h_hat_trunc = h_hat[np.abs(h_hat) > np.max(np.abs(h_hat)) * 1e-3]
+        k_trunc = k_full[np.abs(h_topo_hat) > np.max(np.abs(h_topo_hat)) * 1e-3]
+        h_topo_hat_trunc = h_topo_hat[np.abs(h_topo_hat) > np.max(np.abs(h_topo_hat)) * 1e-3]
 
-        return k_full, k_trunc, h_hat, h_hat_trunc
+        return k_full, k_trunc, h_topo_hat, h_topo_hat_trunc
 
     def __ODEcoeffs(self, k_trunc):
         Ah = self.Ah
@@ -256,10 +255,10 @@ class LeeWaveSolver:
                     Q[i] = (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / (U - 1j * k * Ah) / (
                             U - 1j * k * Dh)
             else:
-                Q = np.zeros((nz, nk), dtype=complex)
-                P = np.zeros((nz, nk), dtype=complex)
+                Q = np.zeros((nk, nz), dtype=complex)
+                P = np.zeros((nk, nz), dtype=complex)
                 for i, k in enumerate(k_trunc):
-                    Q[:, i] = (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / (U - 1j * k * Ah) / (
+                    Q[i, :] = (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / (U - 1j * k * Ah) / (
                             U - 1j * k * Dh) - Uzz / (U - 1j * k * Ah)
         else:
             if self.uniform_mean:
@@ -270,12 +269,12 @@ class LeeWaveSolver:
                            (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / \
                            (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2)
             else:
-                Q = np.zeros_like((nz, nk), dtype=complex)
-                P = np.zeros_like((nz, nk), dtype=complex)
+                Q = np.zeros_like((nk, nz), dtype=complex)
+                P = np.zeros_like((nk, nz), dtype=complex)
                 for i, k in enumerate(k_trunc):
-                    P[:, i] = f ** 2 * Uz * (2 * U - 1j * k * (Ah + Dh)) / \
+                    P[i, :] = f ** 2 * Uz * (2 * U - 1j * k * (Ah + Dh)) / \
                               (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2) / (U - 1j * k * Ah) / (U - 1j * k * Dh)
-                    Q[:, i] = k ** 2 * (U - 1j * k * Ah) / (U - 1j * k * Dh) * \
+                    Q[i, :] = k ** 2 * (U - 1j * k * Ah) / (U - 1j * k * Dh) * \
                               (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / \
                               (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2) - \
                               Uzz * k ** 2 * (U - 1j * k * Ah) / (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2)
@@ -354,11 +353,11 @@ class LeeWaveSolver:
             F, R = self.__forcing_poly(P, Q)
 
             # Use Galerkin expansion to solve homogeneous problem
-            eta = self.__galerkin_sol(P, Q, R, F)
+            eta_hat = self.__galerkin_sol(P, Q, R, F)
 
             for ik, k in enumerate(k_trunc):
                 if k != 0:  # Don't want the singularity at k=0, set it to zero
-                    psi_hat[ik, :] = h_hat_trunc[ik] * U[0] * eta[ik, :]
+                    psi_hat[ik, :] = h_hat_trunc[ik] * U[0] * eta_hat[ik, :]
                     w_hat[ik, :] = 1j * k * psi_hat[ik, :]
                     u_hat[ik, :] = np.gradient(-psi_hat[ik, :], self.dz)
                     v_hat[ik, :] = (-f / (1j * k * U + Ah * k ** 2)) * u_hat[ik, :]
@@ -390,27 +389,63 @@ class LeeWaveSolver:
     def __forcing_poly(self, P, Q):
         F = np.zeros_like(Q, dtype=complex)
         R = np.zeros_like(Q, dtype=complex)
-        nk = Q.shape[1]
+        nk = Q.shape[0]
         H = self.H
         z = self.z
         for i in range(nk):
-            a = P[0, i]
-            b = Q[0, i]
-            c = P[-1, i]
+            a = P[i, 0]
+            b = Q[i, 0]
+            c = P[i, -1]
             mat = np.array([[2, a - 2 / H], [-4 - c * H, -2 / H - c]])
             v = np.array([a / H - b, c / H])
             sol = np.dot(np.linalg.inv(mat), v)
             A = sol[0]
             B = sol[1]
-            F[:, i] = (1 - z / H) * (A * z ** 2 + B * z + 1)
-            R[:, i] = -((1 - z / H) * 2 * A - 2 / H * (2 * A * z + B) + P[:, i] *
-                        ((1 - z / H) * (2 * A * z + B) - 1 / H * (A * z ** 2 + B * z + 1)) + Q[:, i] * F[:, i])
+            F[i, :] = (1 - z / H) * (A * z ** 2 + B * z + 1)
+            R[i, :] = -((1 - z / H) * 2 * A - 2 / H * (2 * A * z + B) + P[i, :] *
+                        ((1 - z / H) * (2 * A * z + B) - 1 / H * (A * z ** 2 + B * z + 1)) + Q[i, :] * F[i, :])
         return F, R
 
-    def __galerkin_sol(P, Q, R, F):
-        pass
-        # TODO
-        # return eta
+    def __galerkin_sol(self, P, Q, R, F):
+        nz = Q.shape[1]
+        nk = Q.shape[0]
+        nm = self.nm
+        nfft = nz - 1
+        H = self.H
+        m0 = pi / H
+        mb = m0 * np.arange(1, nm + 1)
+        phi = np.zeros_like(Q, dtype=complex)
+        for ik in range(nk):
+            q = fft.dct(Q[ik, :], type=1)
+            q[0] /= 2 * nfft
+            q[1:] /= nfft
+            p = fft.dst(P[ik, 1:-1], type=1)
+            p = np.insert(p, 0, 0)
+            p = np.append(p, 0)
+            p /= nfft
+            r = fft.dst(R[ik, 1:-1], type=1)
+            r = np.insert(r, 0, 0)
+            r = np.append(r, 0)
+            r /= nfft
+            # Initialise matrix
+            A = np.zeros((nm, nm), dtype=complex)
+            for m in range(1, nm + 1):
+                for n in range(1, nm + 1):
+                    if n == m:
+                        A[n - 1, m - 1] = q[0] - (m0 * n) ** 2
+                    elif n > m:
+                        A[n - 1, m - 1] = 0.5 * m * m0 * p[n - m] + 0.5 * q[n - m]
+                    else:
+                        A[n - 1, m - 1] = -0.5 * m * m0 * p[m - n] + 0.5 * q[m - n]
+                    if n + m < nfft:
+                        A[n - 1, m - 1] = A[n - 1, m - 1] + 0.5 * m * m0 * p[n + m] - 0.5 * q[n + m]
+
+            r = r[1:nm + 1]
+            a = np.dot(np.linalg.inv(A), r)
+            mz = np.outer(self.z, mb)
+            phi[ik, :] = np.dot(np.sin(mz), a)
+        eta_hat = phi + F
+        return eta_hat
 
     def check_inputs(self):
         # First check for critical levels
