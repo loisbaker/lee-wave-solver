@@ -1,9 +1,11 @@
 import numpy as np
 from numpy import pi
+import matplotlib.pyplot as plt
 import xarray as xr
 import warnings
 import scipy.fft as fft
-
+import cmocean
+plt.rcParams.update({'font.size': 20, 'font.size': 20})
 
 class LeeWaveSolver:
     def __init__(self, nx=800, nz=201, nm=200, H=3000, L=20000, rho_0=1027):
@@ -29,11 +31,14 @@ class LeeWaveSolver:
         self.rho_0 = rho_0
         self.hydrostatic = False
         self.open_boundary = True
+        self.wave_fields = None
+        self.diags = None
+
         self.set_topo()
         self.set_mean_velocity()
         self.set_mean_stratification()
-        self.ds_transformed = None
-        self.ds = None
+
+
 
     def set_topo(self, topo_type='Gaussian', h0=50, width=1000, k_topo=2 * pi / 5000, k_max=0.01, k_min=0.001,
                  K0=2.3e-4, L0=1.3e-4, mu=3.5, h_input=None):
@@ -42,8 +47,6 @@ class LeeWaveSolver:
                 raise ValueError('Topography height should be less than domain height')
             elif width > self.L / 5:
                 raise ValueError('Topography width is too large compared to the length of domain')
-            if h0 > self.H:
-                raise ValueError('Topography height should be less than domain height')
             self.h_topo = h0 * np.exp(-self.x ** 2 / width ** 2)
         elif topo_type == 'WitchOfAgnesi':
             if h0 > self.H:
@@ -74,7 +77,7 @@ class LeeWaveSolver:
             if h_input is None:
                 raise ValueError('Topography needs to be given in \'h_input\'')
             elif len(h_input) != len(self.x):
-                raise ValueError('\'h_input\' should be the same length as x')
+                raise ValueError('\'h_input\' should be the same length as x (solver.x)')
             self.h_topo = h_input
 
     def GJ98topo(self, h0=25, k_max=0.01, k_min=0.001, K0=2.3e-4, L0=1.3e-4, mu=3.5):
@@ -116,7 +119,7 @@ class LeeWaveSolver:
             if U_input is None:
                 raise ValueError('U needs to be given in \'U_input\'')
             elif len(U_input) != len(self.z):
-                raise ValueError('\'U_input\' should be the same length as z')
+                raise ValueError('\'U_input\' should be the same length as z (solver.z)')
             self.U = U_input
 
     def set_mean_stratification(self, N_type='Uniform', N_0=0.001, N_H=0.003, N_input=None):
@@ -130,7 +133,7 @@ class LeeWaveSolver:
             if N_input is None:
                 raise ValueError('N needs to be given in \'N_input\'')
             elif len(N_input) != len(self.z):
-                raise ValueError('\'N_input\' should be the same length as z')
+                raise ValueError('\'N_input\' should be the same length as z (solver.z)')
             self.N = N_input
 
     def solve(self, f=0, open_boundary=True, hydrostatic=True, Ah=1, Dh=None):
@@ -145,6 +148,7 @@ class LeeWaveSolver:
 
         # Find the transformed topography and truncated and full wavenumber vectors
         k_full, k_trunc, h_topo_hat, h_topo_hat_trunc = self.__transform_topo()
+
         # Define the coefficients of the ODE
         P, Q = self.__ODEcoeffs(k_trunc)
 
@@ -159,8 +163,26 @@ class LeeWaveSolver:
         b = self.__inverse_transform(b_hat)
         p = self.__inverse_transform(p_hat)
 
-        # Package everything into a dataset for output
+        # Get 2D background fields
+        if self.uniform_mean:
+            U_2D = np.ones((self.nx,self.nz))*self.U
+            N2_2D = np.ones((self.nx,self.nz))*self.N**2
+            B_2D = np.cumsum(N2_2D,1)*self.dz
+        else:
+            U_2D = np.tile(np.expand_dims(self.U,0),[self.nx,1])
+            N2_2D = np.tile(np.expand_dims(self.N**2, 0), [self.nx, 1])
+            B_2D = np.cumsum(N2_2D,1)*self.dz
 
+
+        # Package everything into a datasets for output
+        self.wave_fields = self.__make_wave_fields_dataset(k_full, psi, u, v, w, b, p, h_topo_hat, psi_hat, u_hat, v_hat, w_hat, b_hat, p_hat, U_2D, B_2D, N2_2D)
+
+        self.diags = self.__make_diags_dataset()
+
+        # Let's plot something
+        #self.plot(self.wave_fields.w)
+
+    def __make_wave_fields_dataset(self, k, psi, u, v, w, b, p, h_topo_hat, psi_hat, u_hat, v_hat, w_hat, b_hat, p_hat, U_2D, B_2D, N2_2D):
         ds = xr.Dataset(
             data_vars=dict(
                 psi=(["x", "z"], psi),
@@ -169,6 +191,10 @@ class LeeWaveSolver:
                 w=(["x", "z"], w),
                 b=(["x", "z"], b),
                 p=(["x", "z"], p),
+                U_2D=(["x", "z"], U_2D),
+                B_2D=(["x", "z"], B_2D),
+                N2_2D=(["x", "z"], N2_2D),
+
                 h_topo=(["x"], self.h_topo),
                 psi_hat=(["k", "z"], psi_hat),
                 u_hat=(["k", "z"], u_hat),
@@ -180,31 +206,171 @@ class LeeWaveSolver:
             ),
             coords=dict(
                 x=(["x"], self.x),
-                k=(["k"], k_full),
+                k=(["k"], k),
                 z=(["z"], self.z),
             ),
             attrs=dict(description="Lee wave solver output fields")
         )
+        ds.h_topo.attrs["long_name"] = "Topographic height"
         ds.psi.attrs["long_name"] = "Perturbation streamfunction"
-        # ds_transformed.psi_hat.attrs["units"] = # Might need to normalise the transforms and then get the units right
         ds.u.attrs["long_name"] = "Perturbation velocity u"
         ds.v.attrs["long_name"] = "Perturbation velocity v"
         ds.w.attrs["long_name"] = "Perturbation velocity w"
         ds.b.attrs["long_name"] = "Perturbation velocity b"
         ds.p.attrs["long_name"] = "Perturbation pressure p"
         ds.b.attrs["long_name"] = "Perturbation buoyancy b"
-        ds.h_topo.attrs["long_name"] = "Topography h"
+        ds.B_2D.attrs["long_name"] = "Background buoyancy b"
+        ds.U_2D.attrs["long_name"] = "Background velocity U"
+        ds.N2_2D.attrs["long_name"] = "Background stratification N^2"
+
+        ds.h_topo.attrs["units"] = "m"
+        ds.psi.attrs["units"] = "m^2/s"
+        ds.u.attrs["units"] = "m/s"
+        ds.v.attrs["units"] = "m/s"
+        ds.w.attrs["units"] = "m/s"
+        ds.w.attrs["units"] = "m/s"
+        ds.b.attrs["units"] = "m/s^2"
+        ds.p.attrs["units"] = "kg/m/s^2"
+        ds.U_2D.attrs["units"] = "m/s"
+        ds.B_2D.attrs["units"] = "m/s^2"
+        ds.N2_2D.attrs["units"] = "1/s"
+
+        ds.h_topo_hat.attrs["long_name"] = "Horizontal Fourier transform of topographic height h_topo"
         ds.psi_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation streamfunction"
-        # ds_transformed.psi_hat.attrs["units"] = # Might need to normalise the transforms and then get the units right
         ds.u_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation velocity u"
         ds.v_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation velocity v"
         ds.w_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation velocity w"
         ds.b_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation velocity b"
         ds.p_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation pressure p"
         ds.b_hat.attrs["long_name"] = "Horizontal Fourier transform of perturbation buoyancy b"
-        ds.h_topo_hat.attrs["long_name"] = "Horizontal Fourier transform of topography h"
+        ds.x.attrs["long_name"] = "Horizontal distance"
+        ds.z.attrs["long_name"] = "Height above bottom"
+        ds.k.attrs["long_name"] = "Horizontal wavenumber"
 
-        self.ds = ds
+
+        ds.h_topo_hat.attrs["units"] = "m^2"
+        ds.psi_hat.attrs["units"] = "m^3/s"
+        ds.u_hat.attrs["units"] = "m^2/s"
+        ds.v_hat.attrs["units"] = "m^2/s"
+        ds.w_hat.attrs["units"] = "m^2/s"
+        ds.w_hat.attrs["units"] = "m^2/s"
+        ds.b_hat.attrs["units"] = "m^2/s^2"
+        ds.p_hat.attrs["units"] = "kg/s^2"
+        ds.x.attrs["units"] = "m"
+        ds.z.attrs["units"] = "m"
+        ds.k.attrs["units"] = "1/m"
+
+
+        return ds
+
+    def __make_diags_dataset(self):
+        ds = self.wave_fields
+        if self.hydrostatic:
+            alpha = 0
+        else:
+            alpha = 1
+        # Horizontal averages: use Parseval. Prefactor of sums is (1/2/L)*(1/2/pi)*dk = 1/4/L^2
+        prefac = 1 / 4 / self.L ** 2
+
+        E_flux_1D = prefac * np.real(np.sum(ds.p_hat * np.conj(ds.w_hat), axis=0))
+
+        E_kinetic_2D = 0.5 * self.rho_0 * (ds.u ** 2 + ds.v ** 2 + alpha * ds.w ** 2)
+        E_potential_2D = 0.5 * self.rho_0 * (ds.b ** 2 / ds.N2_2D)
+        E_2D = E_kinetic_2D + E_potential_2D
+
+        E_kinetic_1D = np.sum(E_kinetic_2D, axis=0) * self.dx / 2 / self.L
+        E_potential_1D = np.sum(E_potential_2D, axis=0) * self.dx / 2 / self.L
+        E_1D = E_kinetic_1D + E_potential_1D
+
+        u_x = ds.u.differentiate('x')
+        v_x = ds.v.differentiate('x')
+        w_x = ds.w.differentiate('x')
+        b_x = ds.b.differentiate('x')
+
+        diss_rate_2D = self.Ah * (u_x ** 2 + v_x ** 2 + alpha * w_x ** 2)
+        mixing_2D = self.Dh * (b_x ** 2 / ds.N2_2D)
+        D_2D = diss_rate_2D + mixing_2D
+
+        diss_rate_1D = np.sum(diss_rate_2D, axis=0) * self.dx / 2 / self.L
+        mixing_1D = np.sum(mixing_2D, axis=0) * self.dx / 2 / self.L
+        D_1D = np.sum(D_2D, axis=0) * self.dx / 2 / self.L
+
+        EP_flux = prefac * np.real(np.sum(ds.u_hat * np.conj(ds.w_hat), axis=0) -
+                                   np.sum(self.f * ds.v_hat * np.conj(ds.b_hat), axis=0) / self.N ** 2)
+        EP_flux_z = EP_flux.differentiate('z')
+
+        drag = E_flux_1D[0] / self.U[0]
+
+        w_rms = np.sqrt(prefac*np.sum(np.abs(ds.w_hat)**2, axis=0))
+
+        ds2 = xr.Dataset(
+            data_vars=dict(
+                E_flux_1D=(["z"], E_flux_1D.values),
+                E_kinetic_1D=(["z"], E_kinetic_1D.values),
+                E_potential_1D=(["z"], E_potential_1D.values),
+                E_1D=(["z"], E_1D.values),
+                diss_rate_1D=(["z"], diss_rate_1D.values),
+                mixing_1D=(["z"], mixing_1D.values),
+                D_1D=(["z"], D_1D.values),
+                EP_flux=(["z"], EP_flux.values),
+                EP_flux_z=(["z"], EP_flux_z.values),
+                drag=([], drag.values),
+                w_rms=(["z"], w_rms.values),
+                E_kinetic_2D=(["x", "z"], E_kinetic_2D.values),
+                E_potential_2D=(["x", "z"], E_potential_2D.values),
+                E_2D=(["x", "z"], E_2D.values),
+                diss_rate_2D=(["x", "z"], diss_rate_2D.values),
+                mixing_2D=(["x", "z"], mixing_2D.values),
+                D_2D=(["x","z"], D_2D.values),
+            ),
+            coords=dict(
+                x=(["x"], self.x),
+                z=(["z"], self.z),
+            ),
+            attrs=dict(description="Lee wave solver diagnostics")
+        )
+        ds2.E_flux_1D.attrs["long_name"] = "Horizontally averaged vertical energy flux"
+        ds2.E_kinetic_1D.attrs["long_name"] = "Horizontally averaged kinetic energy density"
+        ds2.E_potential_1D.attrs["long_name"] = "Horizontally averaged potential energy density"
+        ds2.E_1D.attrs["long_name"] = "Horizontally averaged energy density"
+        ds2.diss_rate_1D.attrs["long_name"] = "Horizontally averaged dissipation rate"
+        ds2.mixing_1D.attrs["long_name"] = "Horizontally averaged mixing"
+        ds2.D_1D.attrs["long_name"] = "Horizontally averaged energy loss"
+        ds2.EP_flux.attrs["long_name"] = "Horizontally averaged Eliassen-Palm flux"
+        ds2.EP_flux_z.attrs["long_name"] = "Vertical gradient of horizontally averaged Eliassen-Palm flux"
+        ds2.drag.attrs["long_name"] = "Horizontally averaged wave drag"
+        ds2.w_rms.attrs["long_name"] = "RMS vertical velocity (horizontally averaged)"
+        ds2.E_kinetic_2D.attrs["long_name"] = "Kinetic energy density"
+        ds2.E_potential_2D.attrs["long_name"] = "Potential energy density"
+        ds2.E_2D.attrs["long_name"] = "Energy density"
+        ds2.diss_rate_2D.attrs["long_name"] = "Dissipation rate"
+        ds2.mixing_2D.attrs["long_name"] = "Mixing"
+        ds2.D_2D.attrs["long_name"] = "Energy loss"
+        ds2.x.attrs["long_name"] = "Horizontal distance"
+        ds2.z.attrs["long_name"] = "Height above bottom"
+
+        ds2.E_flux_1D.attrs["units"] = "kg/s^3"
+        ds2.E_kinetic_1D.attrs["units"] = "kg/m/s^2"
+        ds2.E_potential_1D.attrs["units"] = "kg/m/s^2"
+        ds2.E_1D.attrs["units"] = "kg/m/s^2"
+        ds2.diss_rate_1D.attrs["units"] = "m^2/s^3"
+        ds2.mixing_1D.attrs["units"] = "m^2/s^3"
+        ds2.D_1D.attrs["units"] = "m^2/s^3"
+        ds2.EP_flux.attrs["units"] = "m^2/s^2"
+        ds2.EP_flux_z.attrs["units"] = "m/s^2"
+        ds2.drag.attrs["units"] = "kg/m/s^2"
+        ds2.w_rms.attrs["units"] = "m/s"
+        ds2.E_kinetic_2D.attrs["units"] = "kg/m/s^2"
+        ds2.E_potential_2D.attrs["units"] = "kg/m/s^2"
+        ds2.E_2D.attrs["units"] = "kg/m/s^2"
+        ds2.diss_rate_2D.attrs["units"] = "m^2/s^3"
+        ds2.mixing_2D.attrs["units"] = "m^2/s^3"
+        ds2.D_2D.attrs["units"] = "m^2/s^3"
+        ds2.x.attrs["units"] = "m"
+        ds2.z.attrs["units"] = "m"
+
+        return ds2
+
 
     def __inverse_transform(self, field_hat):
         nz = len(self.z)
@@ -459,17 +625,48 @@ class LeeWaveSolver:
             if u_ < max_u:
                 warnings.warn('Be careful using a decreasing U profile - linear solution may not be valid, and vertical'
                               'viscosity is not implemented')
+                break
             if u_ > max_u:
                 max_u = u_
 
         # Check that f or Uzz is zero
         if self.f != 0 and self.U_type == 'Custom':
-            warnings.warn('The mean flow is only valid if f is zero or U is linear')
+            warnings.warn('The geostrophic flow is only 2D if f is zero or U is linear')
 
-        # Check that the flow is uniform if the rigid lid is used
+        # Check that the flow is uniform if the open boundary is used
         if self.open_boundary and (self.uniform_mean is False):
             raise ValueError('Background fields must be uniform when an open boundary is used')
 
         # Check that there is some friction if there is a rigid lid
         if (self.open_boundary is False) and self.Ah == 0 and self.Dh == 0:
             raise ValueError('A rigid lid with no friction may cause resonances, linear solution may not be valid')
+
+    def plot(self, array):
+        """ Makes a simple 1D or pcolor plot of the solution, given a data_array from solver"""
+        plt.rcParams.update({'font.size': 14, 'font.size': 14})
+        if len(array.dims) == 0:
+            print('Needs more than one dimension to make a plot')
+
+        elif len(array.dims) == 1:
+            fig, ax = plt.subplots(1, 1, figsize=(5, 10))
+            array.plot(y='z',linewidth=2, ax=ax)
+
+        else:
+            fig, ax = plt.subplots(1, 1, figsize=(15, 7))
+
+            if (array.min() < 0) & (array.max() > 0):
+                # Want a symmetric colormap
+                cmap = cmocean.cm.balance
+                array.plot(y = 'z', ax=ax, cmap=cmap)
+                ax.fill(np.append(np.insert(self.x,0,-self.L),self.L),
+                        np.append(np.insert(self.h_topo,0,np.min(self.h_topo)),np.min(self.h_topo)),'k')
+
+                ax.set_ylim([np.min(self.h_topo),self.H])
+            else:
+                cmap = cmocean.cm.thermal
+                array.plot(y='z', ax=ax, cmap=cmap)
+                ax.fill(np.append(np.insert(self.x, 0, -self.L), self.L),
+                        np.append(np.insert(self.h_topo, 0, np.min(self.h_topo)), np.min(self.h_topo)), 'k')
+
+                ax.set_ylim([np.min(self.h_topo), self.H])
+
