@@ -15,7 +15,7 @@ from solver import LeeWaveSolver
 ```
 You will also need *xarray*, *numpy*, *scipy* and *matplotlib* installed in your environment.
 
-First step is to initialise the solver object with some grid dimensions:
+The first step is to initialise the solver object with some grid dimensions:
 ```python
 solver = LeeWaveSolver(nx=400, nz=401)
 ```
@@ -55,6 +55,8 @@ solver.plot(solver.diags.E_flux_1D)
 ![Eflux plot](Eflux.png)
 
 You can also use *matplotlib* or *xarray*'s inbuilt plotting functionality.
+
+The notebook *lee_wave_solver.ipynb* also demonstrates implementation of the solver.
 
 ## Authors
 
