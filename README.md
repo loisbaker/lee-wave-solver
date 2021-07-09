@@ -38,7 +38,7 @@ You're now ready to solve!
 solver.solve(f=0, open_boundary=False, hydrostatic=False)
 ```
 The outputs are given in *xarray* datasets. *solver.wave_fields* contains the real and spectral 2D velocity, buoyancy and pressure fields.
-*solver.diags* contains some 1D and 2D energy diagnostics, including energy flux, dissipation rate, mixing, Eliassen Palm flux, etc.
+*solver.diags* contains some 1D and 2D energy diagnostics, including energy flux, dissipation rate, mixing, and Eliassen Palm flux.
 ```python
 solver.wave_fields
 ```
@@ -54,7 +54,7 @@ solver.plot(solver.diags.E_flux_1D)
 ```
 ![Eflux plot](Eflux.png)
 
-You can also use *matplotlib* or *xarray*'s inbuilt plotting functionality.
+You can use *matplotlib* or *xarray*'s inbuilt plotting functionality to make further plots.
 
 The notebook *lee_wave_solver.ipynb* also demonstrates implementation of the solver.
 
