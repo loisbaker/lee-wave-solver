@@ -334,6 +334,7 @@ class LeeWaveSolver:
         axes[2].set_ylim([0, self.H])
 
         fig.suptitle('Topography and background flow input to the lee wave solver')
+        plt.show()
 
     def solve(self, f=0, open_boundary=True, hydrostatic=True, Ah=1.0, Dh=None):
         """
@@ -438,6 +439,7 @@ class LeeWaveSolver:
                         np.append(np.insert(self.h_topo, 0, np.min(self.h_topo)), np.min(self.h_topo)), 'k')
 
                 ax.set_ylim([np.min(self.h_topo), self.H])
+        plt.show()
 
     def __GJ98topo(self, h0=25, k_max=0.01, k_min=0.001, K0=2.3e-4, L0=1.3e-4, mu=3.5):
         """ Called by set_topo(), creates a realisation of the Goff Jordan (1998) theoretical topography spectrum."""
