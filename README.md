@@ -9,7 +9,7 @@ The solution and energy diagnostics can be found, with input options including:
 - The hydrostatic approximation/ nonhydrostatic flow
 
 ## Getting started
-The module *solver.py* contains all that you need. Find it in this repo, and import the *LeeWaveSolver* class:
+Save the module *solver.py* from this repo, and import the *LeeWaveSolver* class:
 ```python
 from solver import LeeWaveSolver
 ```
@@ -32,6 +32,7 @@ You can visualise the inputs that you've given:
 ```python
 solver.plot_inputs()
 ```
+![input fields plot](inputs.png)
 You're now ready to solve! 
 ```python
 solver.solve(f=0, open_boundary=False, hydrostatic=False)
