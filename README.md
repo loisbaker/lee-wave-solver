@@ -32,7 +32,7 @@ You can visualise the inputs that you've given:
 ```python
 solver.plot_inputs()
 ```
-![input fields plot](inputs.png)
+![input fields plot](figures/inputs.png)
 You're now ready to solve! 
 ```python
 solver.solve(f=0, open_boundary=False, hydrostatic=False)
@@ -42,17 +42,17 @@ The outputs are given in *xarray* datasets. *solver.wave_fields* contains the re
 ```python
 solver.wave_fields
 ```
-![wave fields array output](wave_fields.png)
+![wave fields array output](figures/wave_fields.png)
 
 There's an inbuilt plotting function to make quick plots of the variables:
 ```python
 solver.plot(solver.wave_fields.w)
 ```
-![w pcolormesh plot](w.png)
+![w pcolormesh plot](figures/w.png)
 ```python
 solver.plot(solver.diags.E_flux_1D)
 ```
-![Eflux plot](Eflux.png)
+![Eflux plot](figures/Eflux.png)
 
 You can use *matplotlib* or *xarray*'s inbuilt plotting functionality to make further plots.
 
