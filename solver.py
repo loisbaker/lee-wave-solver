@@ -550,6 +550,7 @@ class LeeWaveSolver:
                             U - 1j * k * Dh) - Uzz / (U - 1j * k * Ah)
         else:
             if self.uniform_mean:
+                
                 Q = np.zeros(nk, dtype=complex)
                 P = 0
                 for i, k in enumerate(k_trunc):
@@ -557,9 +558,11 @@ class LeeWaveSolver:
                            (N ** 2 - alpha * k ** 2 * (U - 1j * k * Ah) * (U - 1j * k * Dh)) / \
                            (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2)
             else:
-                Q = np.zeros_like((nk, nz), dtype=complex)
-                P = np.zeros_like((nk, nz), dtype=complex)
-                for i, k in enumerate(k_trunc):
+                Q = np.zeros((nk, nz), dtype=complex)
+                P = np.zeros((nk, nz), dtype=complex)
+                
+                for i, k in enumerate(k_trunc):                    
+                    
                     P[i, :] = f ** 2 * Uz * (2 * U - 1j * k * (Ah + Dh)) / \
                               (k ** 2 * (U - 1j * k * Ah) ** 2 - f ** 2) / (U - 1j * k * Ah) / (U - 1j * k * Dh)
                     Q[i, :] = k ** 2 * (U - 1j * k * Ah) / (U - 1j * k * Dh) * \
