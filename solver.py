@@ -400,7 +400,7 @@ class LeeWaveSolver:
 
         self.diags = self.__make_diags_dataset()
 
-    def plot(self, array):
+    def plot(self, array, vmin = 'default',vmax='default'):
         """
         Simple plotting function to plot output variables from solver.
 
@@ -414,6 +414,11 @@ class LeeWaveSolver:
 
         """
         plt.rcParams.update({'font.size': 14})
+        if vmin == 'default':
+            vmin = array.min().values
+        if vmax == 'default':
+            vmax = array.max().values
+            
         if len(array.dims) == 0:
             print('Needs more than one dimension to make a plot')
 
@@ -434,7 +439,7 @@ class LeeWaveSolver:
                 ax.set_ylim([np.min(self.h_topo), self.H])
             else:
                 cmap = cmocean.cm.thermal
-                array.plot(y='z', ax=ax, cmap=cmap)
+                array.plot(y='z', ax=ax, cmap=cmap, vmin=vmin, vmax=vmax)
                 ax.fill(np.append(np.insert(self.x, 0, -self.L), self.L),
                         np.append(np.insert(self.h_topo, 0, np.min(self.h_topo)), np.min(self.h_topo)), 'k')
 
