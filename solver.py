@@ -477,7 +477,10 @@ class LeeWaveSolver:
 
     def __check_inputs(self):
         """ Called by solve(). Checks inputs given to solver for consistency and warns user if necessary."""
-
+        # Check that nm < nz
+        if nm > nz-1:
+            warnings.warn('nm should be less than nz. nm has been set to nz-1')
+            self.nm = self.nz
         # First check for critical levels
         if any(self.U) < 0 and any(self.U) > 0:
             warnings.warn('U changes sign somewhere in the domain. Be careful, '
