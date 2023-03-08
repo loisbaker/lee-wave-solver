@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import xarray as xr
 import scipy.fft as fft
 import cmocean
+import warnings
 
 
 class LeeWaveSolver:
