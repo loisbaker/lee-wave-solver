@@ -15,11 +15,7 @@ Note that a MATLAB version of the solver is also available, please get in touch 
 
 ## Getting started
 
-Try it out immediately online using this binder link!
-
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/loisbaker/lee-wave-solver/HEAD?filepath=.%2Flee_wave_solver.ipynb)
-
-Or, save the module *solver.py* from this repo, and import the *LeeWaveSolver* class:
+Save the module *solver.py* from this repo, and import the *LeeWaveSolver* class:
 ```python
 from solver import LeeWaveSolver
 ```
