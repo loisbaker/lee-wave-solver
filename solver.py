@@ -236,6 +236,8 @@ class LeeWaveSolver:
             elif len(h_input) != len(self.x):
                 raise ValueError('\'h_input\' should be the same length as x (solver.x)')
             self.h_topo = h_input
+        else:
+            raise ValueError(f"'{topo_type}' topo_type is not implemented, options are 'Gaussian', 'WitchOfAgnesi', 'Monochromatic', 'GJ98' or 'Custom'.")
         self.h_topo -= np.min(self.h_topo)
 
     def set_mean_velocity(self, U_type='Uniform', U_0=0.1, U_H=0.3, U_input=None):
@@ -264,18 +266,21 @@ class LeeWaveSolver:
         """
 
         self.U_type = U_type
-        if U_type == 'Uniform':
+        if (U_type == 'Uniform') or ((U_type == 'Linear') and (U_0 == U_H)):
             self.U = U_0 * np.ones_like(self.z)
-        elif U_type == 'Linear':
+        elif (U_type == 'Linear'):
             self.uniform_mean = False
             self.U = U_0 + (U_H - U_0) / self.H * self.z
         elif U_type == 'Custom':
-            self.uniform_mean = False
             if U_input is None:
                 raise ValueError('U needs to be given in \'U_input\'')
             elif len(U_input) != len(self.z):
                 raise ValueError('\'U_input\' should be the same length as z (solver.z)')
+            if (np.max(U_input) != np.min(U_input)):
+                self.uniform_mean = False
             self.U = U_input
+        else:
+            raise ValueError(f"'{U_type}' U_type is not implemented, options are 'Uniform', 'Linear', or 'Custom'.")
 
     def set_mean_stratification(self, N_type='Uniform', N_0=0.001, N_H=0.003, N_input=None):
         """
@@ -300,18 +305,21 @@ class LeeWaveSolver:
             User input buoyancy frequency profile, length nz, used in 'Custom' type.
 
         """
-        if N_type == 'Uniform':
+        if (N_type == 'Uniform') or ((N_type == 'Linear') and (N_0 == N_H)):
             self.N = N_0 * np.ones_like(self.z)
         elif N_type == 'Linear':
             self.uniform_mean = False
             self.N = N_0 + (N_H - N_0) / self.H * self.z
         elif N_type == 'Custom':
-            self.uniform_mean = False
             if N_input is None:
                 raise ValueError('N needs to be given in \'N_input\'')
             elif len(N_input) != len(self.z):
                 raise ValueError('\'N_input\' should be the same length as z (solver.z)')
+            if (np.max(N_input) != np.min(N_input)):
+                self.uniform_mean = False
             self.N = N_input
+        else:
+            raise ValueError(f"'{N_type}' N_type is not implemented, options are 'Uniform', 'Linear', or 'Custom'.")
 
     def plot_inputs(self):
         """ Show a plot of the topography, background velocity and stratification profiles."""
@@ -497,6 +505,10 @@ class LeeWaveSolver:
             if u_ > max_u:
                 max_u = u_
 
+        # Warn if U is zero everywhere
+        if self.uniform_mean and (self.U[0] ==0):
+            raise ValueError("You're trying to use zero background flow - you won't get any lee wave field.")
+        
         # Check that f or Uzz is zero
         if self.f != 0 and self.U_type == 'Custom':
             warnings.warn('The geostrophic flow is only 2D if f is zero or U is linear')
@@ -504,6 +516,10 @@ class LeeWaveSolver:
         # Check that the flow is uniform if the open boundary is used
         if self.open_boundary and (self.uniform_mean is False):
             raise ValueError('Background fields must be uniform when an open boundary is used')
+        
+        # Check that we don't have zeros of U and no friction
+        if (np.min(np.abs(self.U)) == 0) and (self.Ah == 0):
+            raise ValueError("There is at least one zero in U, and you have no friction, so there's no valid solution.")
 
         # Check that there is some friction if there is a rigid lid
         if (self.open_boundary is False) and self.Ah == 0 and self.Dh == 0:
