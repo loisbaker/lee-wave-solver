@@ -11,7 +11,7 @@ The solution and energy diagnostics can be found, with input options including:
 - The effect of rotation, using the Coriolis parameter f.
 - The hydrostatic approximation/ nonhydrostatic flow
 
-Note that a MATLAB version of the solver is also available, please get in touch at l.baker18@imperial.ic.ac.uk if you'd like it.
+Note that a MATLAB version of the solver is also available, please get in touch at lois.baker@ed.ac.uk if you'd like it.
 
 ## Getting started
 
